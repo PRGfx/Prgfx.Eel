@@ -1,0 +1,1 @@
+This package tries to port the [Neos.Eel](https://github.com/neos/eel/) DSL from the [Neos CMS](https://neos.io) to C#.
