@@ -1,72 +1,72 @@
-using System;
 using System.Collections.Generic;
-using System.Runtime.Serialization;
-using System.Text.RegularExpressions;
 using Prgfx.Eel.Ast;
 
 namespace Prgfx.Eel
 {
-    public class Parser
+    class Parser
     {
-        public ExpressionNode Parse(string input)
+        protected List<Token> tokens;
+
+        protected int currentToken;
+
+        public Parser(string input)
         {
-            var lexer = new Lexer(input);
-            return ParseExpression(lexer);
+            var tokenizer = new Tokenizer(input);
+            tokens = tokenizer.GetTokens();
+            currentToken = -1;
         }
 
-        private T ReturnOrBacktrack<T>(Func<Lexer, T> parser, Lexer lexer)
+        protected Token NextToken()
         {
-            var snapshot = lexer.Snapshot();
-            try
+            var nextToken = PeekToken();
+            if (nextToken.Type != TokenType.EOF)
             {
-                var result = parser.DynamicInvoke(lexer);
-                if (result == null)
-                {
-                    lexer.Reset(snapshot);
-                }
-                return (T)result;
+                currentToken++;
             }
-            catch (ParserException)
+            return nextToken;
+        }
+
+        protected void RewindToken()
+        {
+            currentToken--;
+            if (currentToken < -1)
             {
-                return (T)(object)null;
-            }
-            catch (System.Exception)
-            {
-                return (T)(object)null;
+                currentToken = -1;
             }
         }
 
-        private T ReturnOrFail<T>(Func<Lexer, T> parser, Lexer lexer, System.Exception exception)
+        /// <summary>
+        /// we create a dummy token so we don't have to handle null everywhere
+        /// </summary>
+        protected Token PeekToken()
         {
-            var result = ReturnOrBacktrack<T>(parser, lexer);
-            if (result == null)
-            {
-                throw exception;
-            }
-            return result;
+            return currentToken < tokens.Count - 1 ? tokens[currentToken + 1] : new Token(TokenType.EOF);
         }
 
-        protected ExpressionNode ParseExpression(Lexer lexer)
+        public ExpressionNode Parse()
         {
-            SkipWhiteSpace(lexer);
-            var exp = ParseConditionalExpression(lexer);
-            SkipWhiteSpace(lexer);
+            return ParseExpression();
+        }
+
+        protected ExpressionNode ParseExpression()
+        {
+            var exp = ParseConditionalExpression();
             return new ExpressionNode() { exp = exp };
         }
 
-        protected ConditionalExpressionNode ParseConditionalExpression(Lexer lexer)
+        protected ConditionalExpressionNode ParseConditionalExpression()
         {
-            var cond = ParseDisjunction(lexer);
+            var cond = ParseDisjunction();
             ExpressionNode success = null;
             ExpressionNode failure = null;
-            if (lexer.Is('?'))
+            if (PeekToken().Type == TokenType.QUESTIONMARK)
             {
-                success = ParseExpression(lexer);
-                if (!lexer.Is(':'))
+                success = ParseExpression();
+                if (NextToken().Type != TokenType.COLON)
                 {
                     throw new ParserException("Missing : in ternary condition");
                 }
-                failure = ParseExpression(lexer);
+                failure = ParseExpression();
             }
             return new ConditionalExpressionNode()
             {
@@ -76,15 +76,14 @@ namespace Prgfx.Eel
             };
         }
 
-        protected DisjunctionNode ParseDisjunction(Lexer lexer)
+        protected DisjunctionNode ParseDisjunction()
         {
-            var lft = ParseConjunction(lexer);
+            var lft = ParseConjunction();
             var rgts = new List<ConjunctionNode>();
-            while (lexer.Peek(2) == "||" || lexer.Peek(3) == "or ")
+            while (PeekToken().Type == TokenType.OP_OR)
             {
-                lexer.Consume();
-                lexer.Consume();
-                var rgt = ParseConjunction(lexer);
+                NextToken();
+                var rgt = ParseConjunction();
                 rgts.Add(rgt);
             }
             return new DisjunctionNode()
@@ -94,19 +93,13 @@ namespace Prgfx.Eel
             };
         }
 
-        protected ConjunctionNode ParseConjunction(Lexer lexer)
+        protected ConjunctionNode ParseConjunction()
         {
-            var lft = ParseComparison(lexer);
+            var lft = ParseComparison();
             var rgts = new List<ComparisonNode>();
-            while (lexer.Peek(2) == "&&" || lexer.Peek(3) == "and ")
+            while (PeekToken().Type == TokenType.OP_AND)
             {
-                lexer.Consume();
-                lexer.Consume();
-                if (lexer.Is('d'))
-                {
-                    lexer.Consume();
-                }
-                var rgt = ParseComparison(lexer);
+                var rgt = ParseComparison();
                 rgts.Add(rgt);
             }
             return new ConjunctionNode()
@@ -116,52 +109,74 @@ namespace Prgfx.Eel
             };
         }
 
-        protected ComparisonNode ParseComparison(Lexer lexer)
+        protected ComparisonNode ParseComparison()
         {
-            var lft = ParseSumCalculation(lexer);
-            SkipWhiteSpace(lexer);
-            Match m = Regex.Match(lexer.Peek(2), "==|!=|<=|>=|<|>");
-            string comp = null;
-            SumCalculationNode rgt = null;
-            if (m.Success)
+            var lft = ParseSumCalculation();
+            string comparisonOperator = null;
+            switch (PeekToken().Type)
             {
-                comp = m.Groups[0].Value;
-                lexer.Consume();
-                if (comp.Length == 2)
-                {
-                    lexer.Consume();
-                }
-                SkipWhiteSpace(lexer);
-                rgt = ParseSumCalculation(lexer);
+                case TokenType.OP_EQUAL:
+                    comparisonOperator = "==";
+                    break;
+                case TokenType.OP_NOTEQUAL:
+                    comparisonOperator = "!=";
+                    break;
+                case TokenType.OP_LESS:
+                    comparisonOperator = "<";
+                    break;
+                case TokenType.OP_LESSEQUAL:
+                    comparisonOperator = "<=";
+                    break;
+                case TokenType.OP_GREATER:
+                    comparisonOperator = ">";
+                    break;
+                case TokenType.OP_GREATEREQUAL:
+                    comparisonOperator = ">=";
+                    break;
+            }
+            SumCalculationNode rgt = null;
+            if (comparisonOperator != null)
+            {
+                NextToken();
+                rgt = ParseSumCalculation();
             }
             return new ComparisonNode()
             {
                 lft = lft,
-                comp = comp,
+                comp = comparisonOperator,
                 rgt = rgt,
             };
         }
 
-        protected SumCalculationNode ParseSumCalculation(Lexer lexer)
+        protected SumCalculationNode ParseSumCalculation()
         {
-            var lft = ParseProdCalculation(lexer);
+            var lft = ParseProdCalculation();
             var args = new List<NodeWithArgsArg<ProdCalculationNode>>();
-            if (lexer.Peek(1) == "+" || lexer.Peek(1) == "-")
+            string op = null;
+            do
             {
-                var op = lexer.Consume();
-                SkipWhiteSpace(lexer);
-                var rgt = ReturnOrFail(
-                    ParseProdCalculation,
-                    lexer,
-                    new ParserException("Error parsing operand in sum expression")
-                );
-                SkipWhiteSpace(lexer);
+                op = null;
+                var next = PeekToken();
+                if (next.Type == TokenType.OP_PLUS)
+                {
+                    op = "+";
+                }
+                else if (next.Type == TokenType.OP_MINUS)
+                {
+                    op = "-";
+                }
+                else
+                {
+                    break;
+                }
+                NextToken();
+                var rgt = ParseProdCalculation();
                 args.Add(new NodeWithArgsArg<ProdCalculationNode>()
                 {
-                    op = op.ToString(),
+                    op = op,
                     rgt = rgt,
                 });
-            }
+            } while (op != null);
             return new SumCalculationNode()
             {
                 lft = lft,
@@ -169,27 +184,39 @@ namespace Prgfx.Eel
             };
         }
 
-        protected ProdCalculationNode ParseProdCalculation(Lexer lexer)
+        protected ProdCalculationNode ParseProdCalculation()
         {
-            var lft = ParseSimpleExpression(lexer);
+            var lft = ParseSimpleExpression();
             var args = new List<NodeWithArgsArg<SimpleExpressionNode>>();
-            SkipWhiteSpace(lexer);
-            while (lexer.Is('/') || lexer.Is('*') || lexer.Is('%'))
+            string op = null;
+            do
             {
-                var op = lexer.Consume();
-                SkipWhiteSpace(lexer);
-                var rgt = ReturnOrFail<SimpleExpressionNode>(
-                    ParseSimpleExpression,
-                    lexer,
-                    new ParserException("Error parsing operand in product expression")
-                );
-                SkipWhiteSpace(lexer);
+                op = null;
+                var next = PeekToken();
+                if (next.Type == TokenType.OP_DIVIDE)
+                {
+                    op = "/";
+                }
+                else if (next.Type == TokenType.OP_TIMES)
+                {
+                    op = "*";
+                }
+                else if (next.Type == TokenType.OP_MODULO)
+                {
+                    op = "%";
+                }
+                else
+                {
+                    break;
+                }
+                NextToken();
+                var rgt = ParseSimpleExpression();
                 args.Add(new NodeWithArgsArg<SimpleExpressionNode>()
                 {
-                    op = op.ToString(),
+                    op = op,
                     rgt = rgt,
                 });
-            }
+            } while (op != null);
             return new ProdCalculationNode()
             {
                 lft = lft,
@@ -197,435 +224,417 @@ namespace Prgfx.Eel
             };
         }
 
-        protected SimpleExpressionNode ParseSimpleExpression(Lexer lexer)
+        protected SimpleExpressionNode ParseSimpleExpression()
         {
-            var arrowFunctionTerm = ReturnOrBacktrack<ArrowFunctionNode>(ParseArrowFunction, lexer);
+            var arrowFunctionTerm = ReturnOrBacktrack(ParseArrowFunction);
             if (arrowFunctionTerm != null)
             {
                 return arrowFunctionTerm;
             }
-            var wrappedExpressionTerm = ReturnOrBacktrack<WrappedExpressionNode>(ParseWrappedExpression, lexer);
+            var wrappedExpressionTerm = ReturnOrBacktrack(ParseWrappedExpression);
             if (wrappedExpressionTerm != null)
             {
                 return wrappedExpressionTerm;
             }
-            var notExpression = ReturnOrBacktrack<NotExpressionNode>(ParseNotExpression, lexer);
+            var notExpression = ReturnOrBacktrack(ParseNotExpression);
             if (notExpression != null)
             {
                 return notExpression;
             }
-            var arrayLiteral = ReturnOrBacktrack<ArrayLiteralNode>(ParseArrayLiteral, lexer);
+            var arrayLiteral = ReturnOrBacktrack(ParseArrayLiteral);
             if (arrayLiteral != null)
             {
                 return arrayLiteral;
             }
-            var objectLiteral = ReturnOrBacktrack<ObjectLiteralNode>(ParseObjectLiteral, lexer);
+            var objectLiteral = ReturnOrBacktrack(ParseObjectLiteral);
             if (objectLiteral != null)
             {
                 return objectLiteral;
             }
-            return ReturnOrFail<TermNode>(ParseTerm, lexer, new ParserException("Error parsing simple expression"));
+            var term = ParseTerm();
+            // var term = ReturnOrBacktrack(ParseTerm);
+            if (term != null)
+            {
+                return term;
+            }
+            throw new ParserException("Error parsing simple expression " + PeekToken().Type + " (" + this.currentToken + ")");
         }
 
-        private TermNode ParseTerm(Lexer lexer)
+        protected BooleanLiteralNode ParseBoolean()
         {
-            TermNode term = ReturnOrBacktrack<BooleanLiteralNode>(ParseBoolean, lexer);
-            if (term != null)
+            var nextToken = NextToken();
+            if (nextToken.Type == TokenType.TRUE)
             {
-                return term;
+                return new BooleanLiteralNode() { value = true };
             }
-            term = ReturnOrBacktrack<NumberLiteralNode>(ParseNumberLiteral, lexer);
-            if (term != null)
+            if (nextToken.Type == TokenType.FALSE)
             {
-                return term;
+                return new BooleanLiteralNode() { value = false };
             }
-            term = ReturnOrBacktrack<StringLiteralNode>(ParseStringLiteral, lexer);
-            if (term != null)
-            {
-                return term;
-            }
-            return ReturnOrFail<ObjectPathNode>(
-                ParseObjectPath,
-                lexer,
-                new ParserException("Could not parse Term")
-            );
+            RewindToken();
+            return null;
         }
 
-        private ObjectPathNode ParseObjectPath(Lexer lexer)
+        protected NumberLiteralNode ParseNumberLiteral()
+        {
+            var nextToken = PeekToken();
+            if (nextToken.Type != TokenType.NUMBER)
+            {
+                return null;
+            }
+            NextToken();
+            return new NumberLiteralNode() { value = (float)nextToken.Payload };
+        }
+
+        protected StringLiteralNode ParseStringLiteral()
+        {
+            var nextToken = PeekToken();
+            if (nextToken.Type != TokenType.STRING)
+            {
+                return null;
+            }
+            NextToken();
+            return new StringLiteralNode() { value = (string)nextToken.Payload };
+        }
+
+        // PathPart: [<identifier>(<arrayAccess>)(<methodArguments>)]
+        // ^- is this correct? can we call a function from array access?
+        // PathPart(.PathPart)*
+        protected ObjectPathNode ParseObjectPath()
         {
             var parts = new List<ObjectPathPartNode>();
-            ObjectPathPartNode first = null;
-            var methodCall = ReturnOrBacktrack<MethodCallNode>(ParseMethodCall, lexer);
-            if (methodCall == null)
+            ObjectPathPartNode first = ReturnOrBacktrack(ParseMethodCall);
+            if (first == null)
             {
-                var identifier = ParseIdentifier(lexer);
-                first = new StaticObjectPathPartNode() { name = identifier };
+                if (PeekToken().Type == TokenType.IDENTIFIER)
+                {
+                    first = new StaticObjectPathPartNode() { name = (string)NextToken().Payload };
+                }
+                // else
+                // {
+                //     throw new ParserException("Could not parse object path, unexpected Token " + PeekToken().Type);
+                // }
+            }
+            if (first == null)
+            {
+                throw new ParserException("Could not parse object path, unexpected Token " + PeekToken().Type);
             }
             else
             {
-                first = methodCall;
+                parts.Add(first);
             }
-            parts.Add(first);
-            while (lexer.Is('.'))
+            while (PeekToken().Type == TokenType.DOT)
             {
-                ObjectPathPartNode part = null;
-                part = ReturnOrBacktrack<MethodCallNode>(ParseMethodCall, lexer);
-                if (part != null) {
-                    parts.Add(part);
+                NextToken();
+                var methodCall = ParseMethodCall();
+                if (methodCall == null)
+                {
+                    if (PeekToken().Type == TokenType.IDENTIFIER)
+                    {
+                        var part = new StaticObjectPathPartNode() { name = (string)NextToken().Payload };
+                        parts.Add(part);
+                    }
                 }
-                if (part == null) {
-                    part = new StaticObjectPathPartNode() { name = ParseIdentifier(lexer) };
-                    parts.Add(part);
+                else
+                {
+                    parts.Add(methodCall);
                 }
-                part = ReturnOrBacktrack<OffsetAccessNode>(ParseOffsetAccess, lexer);
+                var objectAccess = ParseOffsetAccess();
+                if (objectAccess != null)
+                {
+                    parts.Add(objectAccess);
+                }
             }
             return new ObjectPathNode() { path = parts.ToArray() };
         }
 
-        private OffsetAccessNode ParseOffsetAccess(Lexer lexer)
+        protected OffsetAccessNode ParseOffsetAccess()
         {
-            if (!lexer.Is('['))
+            if (PeekToken().Type != TokenType.BRACKET_OPEN)
             {
                 return null;
             }
-            lexer.Consume();
-            SkipWhiteSpace(lexer);
-            var expression = ParseExpression(lexer);
-            if (!lexer.Is(']'))
+            NextToken();
+            var expression = ParseExpression();
+            if (NextToken().Type != TokenType.BRACE_CLOSE)
             {
                 throw new ParserException("Missing ] after offset access");
             }
-            lexer.Consume();
             return new OffsetAccessNode()
             {
                 exp = expression,
             };
         }
 
-        private MethodCallNode ParseMethodCall(Lexer lexer)
+        protected MethodCallNode ParseMethodCall()
         {
-            var name = ParseIdentifier(lexer);
-            if (!lexer.Is('('))
+            var identifier = NextToken();
+            if (identifier.Type != TokenType.IDENTIFIER)
             {
+                RewindToken();
                 return null;
             }
-            lexer.Consume();
-            var arguments = new List<ExpressionNode>();
-            arguments.Add(ParseExpression(lexer));
-            while (lexer.Is(','))
+            var name = (string)identifier.Payload;
+            if (NextToken().Type != TokenType.PAREN_OPEN)
             {
-                arguments.Add(ParseExpression(lexer));
+                RewindToken();
+                return null;
             }
-            if (!lexer.Is(')'))
+            var arguments = ParseNodeList(ParseExpression);
+            RewindToken();
+            var next = NextToken();
+            if (next.Type != TokenType.PAREN_CLOSE)
             {
+                System.Console.WriteLine(next.Type);
                 throw new ParserException("Missing ) after argument list");
             }
-            lexer.Consume();
             return new MethodCallNode()
             {
                 name = name,
-                arguments = arguments.ToArray(),
+                arguments = arguments
             };
         }
 
-        private NumberLiteralNode ParseNumberLiteral(Lexer lexer)
+        protected TermNode ParseTerm()
         {
-            var sb = new System.Text.StringBuilder();
-            var acceptSign = true;
-            var acceptDecimals = true;
-            if (!lexer.Is('-') && !lexer.IsNumeric())
+            TermNode term = ReturnOrBacktrack(ParseBoolean);
+            if (term != null)
             {
-                throw new ParserException("Not a number");
+                return term;
             }
-            if (lexer.Is('-'))
+            term = ReturnOrBacktrack(ParseNumberLiteral);
+            if (term != null)
             {
-                if (acceptSign)
-                {
-                    sb.Append(lexer.Consume());
-                    acceptSign = false;
-                }
-                else
-                {
-                    throw new ParserException("Unexpected sign -");
-                }
+                return term;
             }
-            while (true)
+            term = ReturnOrBacktrack(ParseStringLiteral);
+            if (term != null)
             {
-                if (lexer.Is('.'))
-                {
-                    if (!acceptDecimals)
-                    {
-                        throw new ParserException("Unexpected decimal separator");
-                    }
-                    acceptDecimals = false;
-                    sb.Append(lexer.Consume());
-                }
-                else if (lexer.IsNumeric())
-                {
-                    sb.Append(lexer.Consume());
-                }
-                else if (lexer.IsAlpha())
-                {
-                    var c = lexer.Consume();
-                    lexer.Rewind();
-                    throw new ParserException($"Unexpected character in number: {c}");
-                }
-                else if (lexer.IsEnd())
-                {
-                    break;
-                }
-                else
-                {
-                    break;
-                }
+                return term;
             }
-            if (!float.TryParse(sb.ToString(), out float value))
+            term = ReturnOrBacktrack(ParseObjectPath);
+            if (term != null)
+            {
+                return term;
+            }
+            throw new ParserException("Could not parse Term");
+        }
+
+        protected ObjectLiteralNode ParseObjectLiteral()
+        {
+            if (NextToken().Type != TokenType.BRACE_OPEN)
             {
                 return null;
             }
-            return new NumberLiteralNode() { value = value };
-        }
-
-        private BooleanLiteralNode ParseBoolean(Lexer lexer)
-        {
-            Match m = Regex.Match(lexer.Peek(6), @"^(true|false|TRUE|FALSE)[^a-zA-Z0-9_]");
-            if (m.Success)
-            {
-                var value = m.Groups[1].Value.ToLower();
-                for (int i = 0; i < value.Length; i++)
-                {
-                    lexer.Consume();
-                }
-                return new BooleanLiteralNode()
-                {
-                    value = value == "true",
-                };
-            }
-            return null;
-        }
-
-        private ObjectLiteralNode ParseObjectLiteral(Lexer lexer)
-        {
-            if (!lexer.Is('{'))
-            {
-                return null;
-            }
-            lexer.Consume();
-            SkipWhiteSpace(lexer);
-            var values = new List<ObjectLiteralPropertyNode>();
-            values.Add(ParseObjectLiteralProperty(lexer));
-            if (!lexer.Is('}'))
+            // var values = new List<ObjectLiteralPropertyNode>();
+            // var value = ParseObjectLiteralProperty();
+            // if (value != null)
+            // {
+            //     values.Add(value);
+            //     while (NextToken().Type == TokenType.COMMA)
+            //     {
+            //         value = ParseObjectLiteralProperty();
+            //         if (value != null)
+            //         {
+            //             values.Add(value);
+            //         }
+            //         else
+            //         {
+            //             break;
+            //         }
+            //     }
+            // }
+            var values = ParseNodeList<ObjectLiteralPropertyNode>(ParseObjectLiteralProperty);
+            if (NextToken().Type != TokenType.BRACE_CLOSE)
             {
                 throw new ParserException("Missing } after object literal");
             }
-            lexer.Consume();
-            return new ObjectLiteralNode() { properties = values.ToArray() };
+            return new ObjectLiteralNode()
+            {
+                // properties = values.ToArray()
+                properties = values
+            };
         }
 
-        private ObjectLiteralPropertyNode ParseObjectLiteralProperty(Lexer lexer)
+        protected ObjectLiteralPropertyNode ParseObjectLiteralProperty()
         {
+            var nextToken = NextToken();
             string key = null;
-            var stringKey = ReturnOrBacktrack<StringLiteralNode>(ParseStringLiteral, lexer);
-            if (stringKey != null)
+            if (nextToken.Type == TokenType.STRING || nextToken.Type == TokenType.IDENTIFIER)
             {
-                key = stringKey.value;
+                key = (string)nextToken.Payload;
             }
-            if (key == null)
+            else
             {
-                key = ReturnOrFail<string>(
-                    ParseIdentifier,
-                    lexer,
-                    new ParserException("Expecting string or identifier as object key")
-                );
+                new ParserException("Expecting string or identifier as object key");
             }
-            if (!lexer.Is(':'))
+            if (NextToken().Type != TokenType.COLON)
             {
                 throw new ParserException("Expecting : after object key");
             }
-            lexer.Consume();
-            var exp = ParseExpression(lexer);
+            var expression = ParseExpression();
             return new ObjectLiteralPropertyNode()
             {
                 key = key,
-                value = exp,
+                value = expression
             };
         }
 
-        private StringLiteralNode ParseStringLiteral(Lexer lexer)
+        protected ArrayLiteralNode ParseArrayLiteral()
         {
-            char openingQuote = lexer.Consume();
-            if (openingQuote != '\'' && openingQuote != '"')
-            {
-                lexer.Rewind();
-                return null;
-            }
-            var isEscaped = false;
-            var sb = new System.Text.StringBuilder();
-            while (true)
-            {
-                if (lexer.IsEnd())
-                {
-                    throw new ParserException($"Unfinished string literal \"{sb.ToString()}\"");
-                }
-                if (lexer.Is('\\') && !isEscaped)
-                {
-                    isEscaped = true;
-                    lexer.Consume();
-                    continue;
-                }
-                if (lexer.Is('\'') || lexer.Is('"'))
-                {
-                    var closingQuote = lexer.Consume();
-                    if (!isEscaped && closingQuote == openingQuote)
-                    {
-                        return new StringLiteralNode() { value = sb.ToString() };
-                    }
-                    sb.Append(closingQuote);
-                    isEscaped = false;
-                    continue;
-                }
-                sb.Append(lexer.Consume());
-                isEscaped = false;
-            }
-        }
-
-        private ArrayLiteralNode ParseArrayLiteral(Lexer lexer)
-        {
-            if (!lexer.Is('['))
+            if (NextToken().Type != TokenType.BRACKET_OPEN)
             {
                 return null;
             }
-            lexer.Consume();
-            SkipWhiteSpace(lexer);
-            var values = new List<ExpressionNode>();
-            values.Add(ParseExpression(lexer));
-            while (lexer.Is(','))
-            {
-                SkipWhiteSpace(lexer);
-                values.Add(ParseExpression(lexer));
-            }
-            if (!lexer.Is(']'))
+            var values = ParseNodeList<ExpressionNode>(ParseExpression);
+            // var values = new List<ExpressionNode>();
+            // var value = ParseExpression();
+            // if (value != null)
+            // {
+            //     values.Add(value);
+            //     while (NextToken().Type == TokenType.COMMA)
+            //     {
+            //         value = ParseExpression();
+            //         if (value != null)
+            //         {
+            //             values.Add(value);
+            //         }
+            //         else
+            //         {
+            //             break;
+            //         }
+            //     }
+            // }
+            if (NextToken().Type != TokenType.BRACKET_CLOSE)
             {
                 throw new ParserException("Missing ] after array literal");
             }
-            lexer.Consume();
             return new ArrayLiteralNode()
             {
-                values = values.ToArray(),
+                // values = values.ToArray()
+                values = values
             };
         }
 
-        private NotExpressionNode ParseNotExpression(Lexer lexer)
+        protected NotExpressionNode ParseNotExpression()
         {
-            if (lexer.Is('!'))
-            {
-                lexer.Consume();
-                if (lexer.IsWhiteSpace())
-                {
-                    lexer.Rewind();
-                    throw new ParserException("Unexpected '!'");
-                }
-                return (NotExpressionNode)ParseSimpleExpression(lexer);
-            }
-            return null;
-        }
-
-        protected ArrowFunctionNode ParseArrowFunction(Lexer lexer)
-        {
-            var arguments = ParseMethodArguments(lexer);
-            if (lexer.Peek(2) != "=>")
+            if (NextToken().Type != TokenType.OP_NOT)
             {
                 return null;
             }
-            var exp = ParseExpression(lexer);
+            var expression = ParseSimpleExpression();
+            return (NotExpressionNode)expression;
+        }
+
+        protected WrappedExpressionNode ParseWrappedExpression()
+        {
+            if (NextToken().Type != TokenType.BRACE_OPEN)
+            {
+                return null;
+            }
+            var expression = ParseExpression();
+            if (NextToken().Type != TokenType.BRACE_CLOSE)
+            {
+                throw new ParserException("Missing closing parenthesis after wrapped expression");
+            }
+            return (WrappedExpressionNode)expression;
+        }
+
+        protected ArrowFunctionNode ParseArrowFunction()
+        {
+            var arguments = ParseMethodArguments();
+            if (NextToken().Type != TokenType.ARROW)
+            {
+                return null;
+            }
+            var exp = ParseExpression();
             return new ArrowFunctionNode()
             {
                 arguments = arguments,
-                exp = exp,
+                exp = exp
             };
         }
 
-        protected MethodArgumentsNode ParseMethodArguments(Lexer lexer)
+        protected MethodArgumentsNode ParseMethodArguments()
         {
-            var args = new List<string>();
             var allowMultiple = false;
-            if (lexer.Is('('))
+            // var args = new List<string>();
+            if (PeekToken().Type == TokenType.PAREN_OPEN)
             {
-                lexer.Consume();
+                NextToken();
                 allowMultiple = true;
             }
-            args.Add(ParseIdentifier(lexer));
-            while (allowMultiple && lexer.Is(','))
-            {
-                lexer.Consume();
-                args.Add(ParseIdentifier(lexer));
-            }
-            if (allowMultiple && !lexer.Is(')'))
+            var args = ParseNodeList<string>(() => {
+                var token = NextToken();
+                if (token.Type == TokenType.IDENTIFIER) {
+                    return (string)token.Payload;
+                }
+                RewindToken();
+                return null;
+            });
+            // var arg = NextToken();
+            // if (arg.Type == TokenType.IDENTIFIER)
+            // {
+            //     args.Add((string)arg.Payload);
+            // }
+            // while (PeekToken().Type == TokenType.COMMA)
+            // {
+            //     NextToken();
+            //     arg = NextToken();
+            //     if (arg.Type == TokenType.IDENTIFIER)
+            //     {
+            //         args.Add((string)arg.Payload);
+            //     }
+            //     else
+            //     {
+            //         break;
+            //     }
+            // }
+            if (allowMultiple && PeekToken().Type != TokenType.PAREN_CLOSE)
             {
                 throw new ParserException("Missing closing parenthesis after argument list");
             }
             return new MethodArgumentsNode()
             {
-                arguments = args.ToArray(),
+                // arguments = args.ToArray()
+                arguments = args
             };
         }
 
-        protected WrappedExpressionNode ParseWrappedExpression(Lexer lexer)
+        protected T[] ParseNodeList<T>(System.Func<T> callback)
         {
-            if (lexer.Is('('))
+            var results = new List<T>();
+            var first = callback();
+            if (first != null)
             {
-                lexer.Consume();
+                results.Add(first);
+                while (NextToken().Type == TokenType.COMMA)
+                {
+                    var item = callback();
+                    if (item == null)
+                    {
+                        break;
+                    }
+                    results.Add(item);
+                }
             }
-            else
-            {
-                return null;
-            }
-            var expression = ParseExpression(lexer);
-            if (!lexer.Is(')'))
-            {
-                throw new ParserException("Missing closing parenthesis after wrapped expression");
-            }
-            lexer.Consume();
-            return (WrappedExpressionNode)expression;
+            return results.ToArray();
         }
 
-        protected string ParseIdentifier(Lexer lexer)
+        protected T ReturnOrBacktrack<T>(System.Func<T> callback)
         {
-            if (!lexer.IsAlpha() && !lexer.Is('_'))
+            var currentTokenBefore = this.currentToken;
+            try
             {
-                throw new ParserException("Identifier not starting with a character");
+                T result = callback();
+                if (result != null)
+                {
+                    return result;
+                }
             }
-            var sB = new System.Text.StringBuilder();
-            sB.Append(lexer.Consume());
-            while (lexer.IsAlphaNumeric() || lexer.Is('_'))
-            {
-                sB.Append(lexer.Consume());
-            }
-            return sB.ToString();
-        }
-
-        protected void SkipWhiteSpace(Lexer lexer)
-        {
-            while (lexer.IsWhiteSpace())
-            {
-                lexer.Consume();
-            }
-        }
-    }
-
-    [Serializable]
-    internal class ParserException : Exception
-    {
-        public ParserException()
-        {
-        }
-
-        public ParserException(string message) : base(message)
-        {
-        }
-
-        public ParserException(string message, Exception innerException) : base(message, innerException)
-        {
+            catch (ParserException) { }
+            this.currentToken = currentTokenBefore;
+            return (T)(object)null;
         }
     }
 }
