@@ -251,8 +251,8 @@ namespace Prgfx.Eel
             {
                 return objectLiteral;
             }
-            var term = ParseTerm();
-            // var term = ReturnOrBacktrack(ParseTerm);
+            // var term = ParseTerm();
+            var term = ReturnOrBacktrack(ParseTerm);
             if (term != null)
             {
                 return term;
@@ -303,7 +303,33 @@ namespace Prgfx.Eel
         protected ObjectPathNode ParseObjectPath()
         {
             var parts = new List<ObjectPathPartNode>();
-            ObjectPathPartNode first = ReturnOrBacktrack(ParseMethodCall);
+            while (true) {
+                ObjectPathPartNode part = ReturnOrBacktrack(ParseMethodCall);
+                if (part == null) {
+                    if (PeekToken().Type == TokenType.IDENTIFIER)
+                    {
+                        part = new StaticObjectPathPartNode() { name = (string)NextToken().Payload };
+                    }
+                }
+                if (part == null)
+                {
+                    throw new ParserException("Could not parse object path, unexpected Token " + PeekToken().Type);
+                }
+                else
+                {
+                    parts.Add(part);
+                }
+                var offsetAccess = ParseOffsetAccess();
+                if (offsetAccess != null) {
+                    parts.Add(offsetAccess);
+                }
+                if (PeekToken().Type == TokenType.DOT) {
+                    NextToken();
+                    continue;
+                }
+                break;
+            }
+            /* ObjectPathPartNode first = ReturnOrBacktrack(ParseMethodCall);
             if (first == null)
             {
                 if (PeekToken().Type == TokenType.IDENTIFIER)
@@ -344,7 +370,7 @@ namespace Prgfx.Eel
                 {
                     parts.Add(objectAccess);
                 }
-            }
+            } */
             return new ObjectPathNode() { path = parts.ToArray() };
         }
 
@@ -356,7 +382,7 @@ namespace Prgfx.Eel
             }
             NextToken();
             var expression = ParseExpression();
-            if (NextToken().Type != TokenType.BRACE_CLOSE)
+            if (NextToken().Type != TokenType.BRACKET_CLOSE)
             {
                 throw new ParserException("Missing ] after offset access");
             }
@@ -381,7 +407,6 @@ namespace Prgfx.Eel
                 return null;
             }
             var arguments = ParseNodeList(ParseExpression);
-            RewindToken();
             var next = NextToken();
             if (next.Type != TokenType.PAREN_CLOSE)
             {
@@ -487,31 +512,12 @@ namespace Prgfx.Eel
                 return null;
             }
             var values = ParseNodeList<ExpressionNode>(ParseExpression);
-            // var values = new List<ExpressionNode>();
-            // var value = ParseExpression();
-            // if (value != null)
-            // {
-            //     values.Add(value);
-            //     while (NextToken().Type == TokenType.COMMA)
-            //     {
-            //         value = ParseExpression();
-            //         if (value != null)
-            //         {
-            //             values.Add(value);
-            //         }
-            //         else
-            //         {
-            //             break;
-            //         }
-            //     }
-            // }
             if (NextToken().Type != TokenType.BRACKET_CLOSE)
             {
                 throw new ParserException("Missing ] after array literal");
             }
             return new ArrayLiteralNode()
             {
-                // values = values.ToArray()
                 values = values
             };
         }
@@ -604,20 +610,32 @@ namespace Prgfx.Eel
         protected T[] ParseNodeList<T>(System.Func<T> callback)
         {
             var results = new List<T>();
-            var first = callback();
-            if (first != null)
-            {
-                results.Add(first);
-                while (NextToken().Type == TokenType.COMMA)
-                {
-                    var item = callback();
-                    if (item == null)
-                    {
-                        break;
-                    }
-                    results.Add(item);
+            while (true) {
+                var item = callback();
+                if (item == null) {
+                    break;
+                }
+                results.Add(item);
+                if (PeekToken().Type == TokenType.COMMA) {
+                    NextToken();
+                } else {
+                    break;
                 }
             }
+            // var first = callback();
+            // if (first != null)
+            // {
+            //     results.Add(first);
+            //     while (NextToken().Type == TokenType.COMMA)
+            //     {
+            //         var item = callback();
+            //         if (item == null)
+            //         {
+            //             break;
+            //         }
+            //         results.Add(item);
+            //     }
+            // }
             return results.ToArray();
         }
 

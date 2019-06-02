@@ -2,6 +2,6 @@ namespace Prgfx.Eel.EelHelper
 {
     public abstract class AbstractEelHelper
     {
-        public abstract bool allowsCallOfMethod(string methodName);
+        public abstract bool AllowsCallOfMethod(string methodName);
     }
 }

@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Prgfx.Eel.Ast;
+using Prgfx.ObjectUtils;
 
 namespace Prgfx.Eel
 {
@@ -224,18 +226,65 @@ namespace Prgfx.Eel
         private object EvaluateNode(ObjectPathNode expression, Context context)
         {
             var originalContext = context;
+            object result = context.Unwrap();
             var tmp = context;
             foreach (var path in expression.path) {
                 if (path is StaticObjectPathPartNode) {
-                    tmp = (Context)EvaluateNode((StaticObjectPathPartNode)path, context);
+                    var key = ((StaticObjectPathPartNode)path).name;
+                    result = ObjectAccess.GetProperty(result, key);
+                    // tmp = (Context)EvaluateNode((StaticObjectPathPartNode)path, context);
+                }
+                if (path is MethodCallNode) {
+                    var methodCall = (MethodCallNode)path;
+                    var callee = result;
+                    if (callee == null) {
+                        // TODO this might happen if a function is registered directly in the context
+                        continue;
+                    }
+                    if (!this.CanCallMethod(callee, methodCall.name)) {
+                        throw new EvaluationException($"Method {methodCall.name} cannot be called on the given object");
+                    }
+                    var methodInfo = callee.GetType().GetMethod(methodCall.name);
+                    if (methodInfo == null) {
+                        throw new EvaluationException($"Method ${methodCall.name} does not exist on the given object");
+                    }
+                    var parameters = new List<object>();
+                    for (var i = 0; i < methodCall.arguments.Length; i++) {
+                        var argNode = methodCall.arguments[i];
+                        var argValue = EvaluateNode(argNode, context);
+                        if (argValue is float) {
+                            var parameterInfo = methodInfo.GetParameters()[i];
+                            if (parameterInfo.ParameterType == typeof(int)) {
+                                argValue = Convert.ToInt32(argValue);
+                            }
+                        }
+                        parameters.Add(argValue);
+                    }
+                    for (var i = methodCall.arguments.Length; i < methodInfo.GetParameters().Length; i++) {
+                        var parameterInfo = methodInfo.GetParameters()[i];
+                        if (parameterInfo.IsOptional) {
+                            parameters.Add(parameterInfo.DefaultValue);
+                        }
+                    }
+                    // var parameters = methodCall.arguments.Select(argNode => EvaluateNode(argNode, context)).ToArray();
+                    var callResult = methodInfo.Invoke(tmp, parameters.ToArray());
+                    result = callResult;
+                }
+                if (path is OffsetAccessNode) {
+                    var offset = Convert.ToString(EvaluateNode(((OffsetAccessNode)path).exp, context));
+                    var value = ObjectAccess.GetProperty(result, offset);
+                    result = value;
                 }
             }
-            return tmp.Unwrap();
+            return result;
         }
 
-        private object EvaluateNode(StaticObjectPathPartNode expression, Context context)
+        protected bool CanCallMethod(object instance, string methodName)
         {
-            return context.GetAndWrap(expression.name);
+            if (!(instance is EelHelper.AbstractEelHelper)) {
+                return false;
+            }
+            return ((EelHelper.AbstractEelHelper)instance).AllowsCallOfMethod(methodName);
         }
 
         private void EvaluateNode(ObjectPathPartNode path, Context context)
@@ -301,8 +350,11 @@ namespace Prgfx.Eel
 
         public object Evaluate(string code, Context context)
         {
-            var parser = new Parser();
-            var ast = parser.Parse(code);
+            var parser = new Parser(code);
+            var ast = parser.Parse();
+            var astString = Newtonsoft.Json.JsonConvert.SerializeObject(ast);
+            System.Console.WriteLine(astString);
+            // return null;
             var evaluator = new EelEvaluator(ast, context);
             return evaluator.Evaluate();
         }
